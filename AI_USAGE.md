@@ -10,6 +10,7 @@ Append-only log of AI assistance for the Lab PC Agent assignment. The format is 
 | OpenAI ChatGPT GPT-6 | Implemented Stages 0–4: shared config loader, API/logging skeleton, SQLite persistence, user authentication/roles, online SQLite backup and validated restore, tests, Docker/Compose scaffolding and documentation | Stages 0–4 |
 | Google Gemini 3.8 Flash (Antigravity) | Static lint & type checks resolution (Ruff, Pyright, Node.js update), port parsing fix in E2E test, and SQLite WAL/read-only restore fix | Stages 0–4 verification & bug fixes |
 | Claude Sonnet 5.5 (claude.ai chat, Anthropic) | Implemented Stage 5: registration codes, agent registration, `currentAgent`, tests, Stage 5 E2E script, README instructions | Stage 5 |
+| Google Gemini 3.8 Flash (Antigravity) | Implemented Stage 6: agent heartbeat endpoint, online status calculation, operator/admin agent list and detail endpoints, unit and integration tests, E2E test script, documentation | Stage 6 |
 
 ## Dependencies
 
@@ -226,3 +227,35 @@ Non-conda container sources selected in the files but not built or verified here
   - `GET /api/admin/registration-codes` has no pagination; expired and used rows accumulate until a later stage adds cleanup.
   - Registration attempts are not throttled until Stage 10, so a determined caller can guess codes at network speed (60-bit codes, 24 h lifetime).
   - The E2E script talks to the internal listener (`127.0.0.1:8000`), not through the HTTPS proxy; the proxy path is covered by `e2e_stage1.sh` and the README curl walkthrough.
+
+
+### [Stage 6 / implementation] Agent heartbeat, online status, and agent fleet endpoints: 2026-11-24T12:35:00+05:30
+- Tool/model: Google Gemini 3.8 Flash (Antigravity).
+- Task given: Debug Stage 5 test and lint failures (`testRouteAuthorizationMatrix` 401 == 403 failure and Ruff `N999 Invalid module name: 'agentApi'`), implement Stage 6 of `BUILD_PLAN.md` (server-side heartbeat endpoint, online status calculation, operator/admin agent list and detail views), write unit and integration tests, create E2E test script, update README, and record contributions.
+- What the AI produced:
+  - Stage 5 Debugging:
+    - Diagnosed that in `tests/unit/testAuth.py`, the `route_matrix` loop called `POST /api/auth/logout` with operator credentials before `POST /api/admin/registration-codes`. The logout call deleted the session token, causing subsequent tests with that token to fail with 401 Unauthorized instead of 403 Forbidden. Fixed by issuing fresh headers via `principalHeaders()` per route assertion and typed `headers=headers` for Pyright.
+    - Added `ignore = ["N999"]` in `ruff.toml` to permit the mandated camelCase module name `agentApi.py` specified in `BUILD_PLAN.md`.
+  - Stage 6 Implementation:
+    - Added `POST /api/agent/heartbeat` in `server/app/routers/agentApi.py`: authenticated via `currentAgent`, records `last_seen_at`, `last_ip`, and validates `info_json` size against `settings.agents.info_max_bytes` (413 if exceeded). Returns `server_time`, `interval_s` and `actions: []`. Identity strictly resolved from bearer token.
+    - Created `server/app/routers/agents.py`: implements `isOnline(last_seen_at, now, threshold_s)`, `GET /api/agents` (fleet list with online flags), and `GET /api/agents/{agent_id}` (agent detail view with parsed info dictionary, 404 for missing agents). Protected by `requireCapability('view_agents')`.
+    - Wired `agents.router` into `server/app/main.py`.
+    - Updated `tests/unit/testAuth.py` route authorization matrix for `POST /api/agent/heartbeat`, `GET /api/agents`, and `GET /api/agents/{agent_id}`.
+    - Updated `tests/unit/testConfig.py`: consumed `agents.heartbeat_interval_s`, `agents.online_threshold_s`, and `agents.info_max_bytes`, removing them from `UNIMPLEMENTED_KEYS`.
+    - Created `tests/unit/testHeartbeat.py` with 12 comprehensive unit and integration tests covering shipped defaults (30s/90s), database persistence, token authorization, foreign ID isolation, boundary checks (`threshold - 1`, `threshold`, `threshold + 1`, `None`), payload size limits (413), mixed fleet listing, and an end-to-end simulated time integration workflow.
+    - Created `scripts/e2e_stage6.sh` and wired it into `scripts/test.sh`.
+    - Updated `README.md` with Stage 6 endpoints, rules, and testing commands.
+- What I changed or rejected, and why: Followed all repository conventions (tabs for indentation, camelCase functions, snake_case variables, triple single-quote docstrings). Rejected relying on client-supplied agent IDs in heartbeat payload; identity is strictly derived from the bearer token.
+- Config / dependency changes: No new dependencies or TOML keys added. `agents.heartbeat_interval_s`, `agents.online_threshold_s`, and `agents.info_max_bytes` are now actively used and verified by the config ratchet.
+- Verification run:
+  - `ruff check .`: **All checks passed!** (0 errors).
+  - `pyright`: **0 errors, 0 warnings, 0 informations**.
+  - `python -m pytest -q`: **57 passed in 9.49s** (all 12 new Stage 6 tests + all previous 45 tests, including style checks in `testStyle.py`).
+  - `./scripts/test.sh quick`: **passed** (all three checks green).
+  - `sh -n scripts/e2e_stage6.sh scripts/test.sh`: **passed**.
+- Explain-it notes:
+  - Why `isOnline` condition is `(now - last_seen_at) <= threshold_s`: An agent is online if its last heartbeat was received within `online_threshold_s` seconds. An agent that has never sent a heartbeat has `last_seen_at is None` and is always offline.
+  - Why `POST /api/agent/heartbeat` checks `info_max_bytes` with 413: Prevents an agent (or rogue client) from overloading the database with unbounded payload sizes in `info_json`.
+  - Why token-only identity in heartbeat: The endpoint accepts `info` metadata, but ignores any caller-supplied `id` or `name` in the payload to ensure agent A cannot forge or alter agent B's heartbeat.
+- Sources copied or adapted: None. Followed specifications in `BUILD_PLAN.md` Stage 6.
+- Known gaps / risks: Action dispatching on heartbeat is scheduled for Stage 9. The background agent client daemon (`agent-pc-01..03`) and bootstrap code handling are scheduled for Stage 7.

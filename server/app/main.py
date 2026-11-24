@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from server.app.clock import nowEpoch
 from server.app.db import getConnection, initSchema
-from server.app.routers import agentApi, auth, codes, health
+from server.app.routers import agentApi, agents, auth, codes, health
 from server.app.security import hashPassword
 from server.app.seed import seedUsers
 from shared.config import Settings, loadSettings
@@ -43,6 +43,7 @@ def createApp(settings: Settings | None = None, connection_factory=None, clock=N
 	app.include_router(health.router)
 	app.include_router(auth.router)
 	app.include_router(codes.router)
+	app.include_router(agents.router)
 	app.include_router(agentApi.router)
 
 	@app.middleware('http')

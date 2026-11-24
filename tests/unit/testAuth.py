@@ -129,6 +129,9 @@ def testRouteAuthorizationMatrix(temp_settings):
 		('GET', '/api/admin/registration-codes'): {'anonymous': 401, 'operator': 403, 'admin': 200, 'agent': 401},
 		('DELETE', '/api/admin/registration-codes/{code_id}'): {'anonymous': 401, 'operator': 403, 'admin': 404, 'agent': 401},
 		('POST', '/api/agent/register'): {'anonymous': 422, 'operator': 422, 'admin': 422, 'agent': 422},
+		('POST', '/api/agent/heartbeat'): {'anonymous': 401, 'operator': 401, 'admin': 401, 'agent': 200},
+		('GET', '/api/agents'): {'anonymous': 401, 'operator': 200, 'admin': 200, 'agent': 401},
+		('GET', '/api/agents/{agent_id}'): {'anonymous': 401, 'operator': 404, 'admin': 404, 'agent': 401},
 	}
 	with TestClient(app) as client:
 		credentials_path = Path(temp_settings.paths.data_dir) / temp_settings.paths.credentials_file
@@ -152,5 +155,5 @@ def testRouteAuthorizationMatrix(temp_settings):
 		for (method, path), expected in route_matrix.items():
 			for principal in ('anonymous', 'operator', 'admin', 'agent'):
 				headers = principalHeaders(principal)
-				response = client.request(method, path.replace('{code_id}', '999999'), headers=headers)
+				response = client.request(method, path.replace('{code_id}', '999999').replace('{agent_id}', '999999'), headers=headers)
 				assert response.status_code == expected[principal], (method, path, principal)

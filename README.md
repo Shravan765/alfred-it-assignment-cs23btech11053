@@ -1,6 +1,6 @@
 # Lab PC Agent
 
-A staged Python service for managing lab PCs. The implementation currently covers Stages 0–5 of `BUILD_PLAN.md`:
+A staged Python service for managing lab PCs. The implementation currently covers Stages 0–6 of `BUILD_PLAN.md`:
 
 - Validated TOML configuration and repository style guardrails.
 - FastAPI service behind a local HTTPS reverse proxy.
@@ -8,6 +8,7 @@ A staged Python service for managing lab PCs. The implementation currently cover
 - Seeded admin/operator accounts, scrypt password hashing and expiring bearer sessions.
 - Consistent online SQLite backups and validated, atomic database restores.
 - Admin-created one-time registration codes and agent registration (`POST /api/agent/register`) that issues a per-agent bearer token.
+- Agent heartbeat reporting (`POST /api/agent/heartbeat`) and operator/admin agent fleet monitoring (`GET /api/agents`, `GET /api/agents/{id}`) with computed online status.
 
 ## Requirements
 
@@ -101,7 +102,24 @@ Rules worth knowing:
 - Unknown, malformed, used, expired and revoked codes all return the same `403 Invalid registration code`, so a caller cannot tell which case applies.
 - Agent names must match `[A-Za-z0-9][A-Za-z0-9._-]*` and be at most `agents.name_max_length` characters (`422` otherwise). A name that is already taken (ignoring case) gives `409` and does **not** use up the code.
 - Operators get `403` on the code endpoints; a user token on an agent endpoint, or an agent token on a user endpoint, gets `401`.
-- Not yet implemented: heartbeat (Stage 6), the agent process and its bootstrap codes (Stage 7), agent removal (Stage 8), throttling of failed registrations (Stage 10).
+- Implemented in Stage 6: heartbeat reporting and operator agent fleet monitoring.
+- Not yet implemented: the agent loop process and its bootstrap codes (Stage 7), agent removal (Stage 8), action execution (Stage 9), throttling of failed attempts (Stage 10).
+
+## Agent heartbeat and fleet monitoring (Stage 6)
+
+Registered agents send heartbeats with optional machine metadata; operators and admins monitor which PCs are online.
+
+| Endpoint | Who | Purpose |
+|---|---|---|
+| `POST /api/agent/heartbeat` | agent token | Records heartbeat timestamp, client IP and optional `info` dict. Returns `200 {"server_time", "interval_s", "actions": []}`. `413` if `info` exceeds `agents.info_max_bytes`. |
+| `GET /api/agents` | operator, admin | Lists all registered agents with computed `online` boolean (`true` if `now - last_seen_at <= agents.online_threshold_s`, otherwise `false`). |
+| `GET /api/agents/{id}` | operator, admin | Returns detailed agent profile including parsed `info` object and `online` flag (`404` if not found). |
+
+Rules:
+- Agent identity is resolved strictly from the bearer token; foreign IDs or names in the heartbeat body are ignored.
+- An agent that has never sent a heartbeat is reported as `online: false` with `last_seen_at: null`.
+- Timing thresholds derive from `config_settings.toml` (`heartbeat_interval_s = 30`, `online_threshold_s = 90`).
+- Anonymous callers and agent tokens receive `401` on operator/admin agent viewing endpoints.
 
 ## How to test the features
 
@@ -111,16 +129,18 @@ Rules worth knowing:
 conda activate labpc
 python -m pytest -q                              # everything
 python -m pytest -q tests/unit/testRegistration.py   # Stage 5 only
-python -m pytest -q -k "Redeem or Expiry"        # race and expiry boundary tests
+python -m pytest -q tests/unit/testHeartbeat.py      # Stage 6 only
+python -m pytest -q -k "Redeem or Expiry or Online"  # race, expiry and boundary tests
 ./scripts/test.sh quick                          # ruff + pyright + pytest
 ```
 
 `testRegistration.py` covers: alphabet/format/uniqueness of generated codes, case- and dash-insensitive input, single use, five threads racing for one code (exactly one `201`), expiry at `codes.ttl_s - 1` versus `codes.ttl_s` (fake clock, no sleeping), identical errors for unknown/used/expired/revoked codes, no plaintext code or token in the database files, `codes.max_active`, duplicate and invalid names, revoke rules, and token separation between users and agents. `testAuth.py` holds the route authorization matrix, which fails if any route is missing from it.
 
-With the stack running (`docker compose up --build -d`), the Stage 5 end-to-end check is:
+With the stack running (`docker compose up --build -d`), the Stage 5 and 6 end-to-end checks are:
 
 ```sh
 ./scripts/e2e_stage5.sh
+./scripts/e2e_stage6.sh
 ```
 
 It logs in as both sample users, checks the `403`/`401` responses, creates, redeems, reuses, lists and revokes codes, then removes its throw-away agent. The complete gate (`./scripts/test.sh`, which wipes Compose volumes) runs it automatically.
@@ -193,4 +213,4 @@ Run restore only while the application is stopped; the provided `scripts/restore
 
 ## Current scope and known limitations
 
-Heartbeat and online status, the agent runtime, agent removal, action execution, rate limiting and the browser UI are later stages. The agent Docker target remains a placeholder until its planned stage. Conda dependency solving and Docker-based integration checks must be run in an environment with Conda/Mamba and Docker installed.
+The agent background loop daemon (`agent-pc-01..03`), agent removal (`DELETE /api/agents/{id}`), action execution, rate limiting and the browser dashboard are later stages. The agent Docker target remains a placeholder until Stage 7. Conda dependency solving and Docker-based integration checks must be run in an environment with Conda/Mamba and Docker installed.
