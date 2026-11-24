@@ -1,0 +1,367 @@
+# =============================================================================
+#  config_settings.toml
+#  The single source of defaults for the Lab PC Agent system (server AND agent)
+# =============================================================================
+#
+#  HOW THIS FILE IS USED
+#  ---------------------
+#  * The server and the agent both read this file through loadSettings() in
+#    shared/config.py, using the stdlib `tomllib`.
+#  * Python code contains NO default values of its own. A missing key, an
+#    unknown key (typo), a value of the wrong type, or a value outside its
+#    allowed range stops start-up with one message listing every problem.
+#  * This file holds NO secrets. Passwords and tokens are generated at run time.
+#  * Where is the file?
+#      - env LAB_CONFIG_FILE   path of this file (docker-compose mounts it
+#                              read-only at /config/config_settings.toml).
+#      - env LAB_CONFIG_OVERLAY (optional) path of a second, partial TOML file.
+#                              Its values replace the ones here. It may only
+#                              override keys that exist here. Used by tests.
+#      - env AGENT_NAME        the one per-container value (agent only): the
+#                              name this agent registers under, e.g. "pc-01".
+#  * NOT in this file (infrastructure, fixed in docker-compose.yml, Caddyfile
+#    and Dockerfile): the public HTTPS port 8443, the internal app port,
+#    service names, volume names.
+#
+#  UNITS: a key ending in _s is seconds, _ms is milliseconds, _bytes is bytes.
+#  Every key below is preceded by a comment saying what it does, what the
+#  allowed values are and what happens if you change it.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+#  [paths]  Where the server keeps files. All paths are INSIDE the container.
+# -----------------------------------------------------------------------------
+[paths]
+
+# Directory on the persistent Docker volume "app_data". It holds the SQLite
+# database and the sample-credentials file, so it must be the mount point of
+# that volume or data will not survive `docker compose down`.
+# Allowed: absolute path. Read by: server.
+data_dir = "/data"
+
+# File name of the SQLite database, created inside data_dir on first start.
+# Changing it on an existing install makes the server start with an EMPTY
+# database (the old file is simply not used).
+# Allowed: plain file name, no slashes. Read by: server.
+database_file = "lab.db"
+
+# File name (inside data_dir, permissions 600) that receives the generated
+# sample passwords. Written ONCE, when a sample user is first created; later
+# start-ups never rewrite it (passwords are stored only as hashes).
+# Allowed: plain file name, no slashes. Read by: server.
+credentials_file = "sample_credentials.txt"
+
+# Directory shared (through the "bootstrap" Docker volume) between the server
+# and the demo agents. On first start the server writes one one-time
+# registration code per name in seed.bootstrap_agent_names here, as
+# "<agent name>.code". Agents mount it read-only.
+# Allowed: absolute path. Read by: server.
+bootstrap_dir = "/bootstrap"
+
+
+# -----------------------------------------------------------------------------
+#  [logging]  Request logging (one line per request, written to stdout).
+# -----------------------------------------------------------------------------
+[logging]
+
+# Minimum severity that is printed. Request lines are written at INFO, so
+# raising this above INFO hides them and BREAKS the "one log line per request"
+# requirement. Lower it to DEBUG for troubleshooting only.
+# Allowed: "DEBUG", "INFO", "WARNING", "ERROR". Read by: server, agent.
+level = "INFO"
+
+# Whether each request line ends with who made the request (user name or agent
+# name, or "-" when anonymous). Never logs tokens, headers, bodies or query
+# strings, whatever this is set to.
+# Allowed: true / false. Read by: server.
+include_actor = true
+
+
+# -----------------------------------------------------------------------------
+#  [database]  SQLite behaviour.
+# -----------------------------------------------------------------------------
+[database]
+
+# How long a connection waits for a lock held by another writer before it
+# fails with "database is locked". Heartbeats from many agents write at the
+# same time, so this must not be zero.
+# Allowed: 100 to 60000. Read by: server.
+busy_timeout_ms = 5000
+
+# SQLite journal mode. "WAL" lets readers and one writer work at the same time
+# and makes online backups safe. "DELETE" is the old behaviour (slower under
+# concurrent heartbeats); only use it if the volume does not support WAL.
+# Allowed: "WAL", "DELETE". Read by: server.
+journal_mode = "WAL"
+
+
+# -----------------------------------------------------------------------------
+#  [auth]  Users, passwords and sessions (admin and operator).
+# -----------------------------------------------------------------------------
+[auth]
+
+# How long a login session (bearer token) stays valid after sign-in. After
+# this the user must sign in again. Logging out ends it immediately.
+# Allowed: 60 to 604800 (one week). Read by: server.
+session_ttl_s = 28800
+
+# Number of random bytes in every session token and agent token. The token is
+# sent as text (urlsafe base64) and only its SHA-256 hash is stored.
+# Allowed: 16 to 64. Read by: server.
+token_bytes = 32
+
+# scrypt cost parameters used to hash passwords. N is the CPU/memory cost and
+# MUST be a power of two; memory used is about 128 * N * r bytes (16 MiB with
+# the defaults). Raising N slows every login but makes stolen hashes harder to
+# crack. Tests lower N through the overlay file so they stay fast.
+# Allowed: scrypt_n power of two, 1024 to 1048576; scrypt_r 1 to 32;
+#          scrypt_p 1 to 4. Read by: server.
+scrypt_n = 16384
+scrypt_r = 8
+scrypt_p = 1
+
+
+# -----------------------------------------------------------------------------
+#  [throttle]  Brute-force protection (implemented in Stage 10).
+#  Counters live in memory, are kept per client IP and reset when the server
+#  restarts. A throttled request gets HTTP 429.
+# -----------------------------------------------------------------------------
+[throttle]
+
+# Failed sign-ins allowed from one client IP inside login_window_s before
+# further login attempts are answered with 429 until the window passes.
+# Allowed: 1 to 1000. Read by: server.
+login_max_failures = 5
+
+# Length of the sliding window used for login_max_failures.
+# Allowed: 10 to 86400. Read by: server.
+login_window_s = 300
+
+# Same idea for failed agent registrations (wrong, used or expired code).
+# Stops an attacker guessing one-time codes.
+# Allowed: 1 to 1000. Read by: server.
+register_max_failures = 10
+
+# Window for register_max_failures.
+# Allowed: 10 to 86400. Read by: server.
+register_window_s = 300
+
+
+# -----------------------------------------------------------------------------
+#  [limits]  Request size limits (enforced in the app; the proxy also caps).
+# -----------------------------------------------------------------------------
+[limits]
+
+# Largest request body the server accepts. Larger bodies get HTTP 413. All real
+# requests (login, heartbeat, action result) are far smaller than this.
+# Allowed: 1024 to 1048576. Read by: server.
+max_body_bytes = 16384
+
+
+# -----------------------------------------------------------------------------
+#  [codes]  One-time agent registration codes (created by admins).
+# -----------------------------------------------------------------------------
+[codes]
+
+# How long a newly created code can be used before it expires. Applies to codes
+# made by admins and to the bootstrap codes of the demo agents.
+# Allowed: 60 to 2592000 (30 days). Read by: server.
+ttl_s = 86400
+
+# Number of characters in a code. Each character comes from a fixed 32-letter
+# alphabet without look-alikes (no 0/O, 1/I/L, U), i.e. 5 bits each, so 12
+# characters = 60 bits. Shorter codes are refused: they would be guessable.
+# Allowed: 12 to 32, and a multiple of group_size. Read by: server.
+length = 12
+
+# Codes are shown in groups separated by "-" for readability, e.g.
+# length 12 / group_size 4 gives XXXX-XXXX-XXXX. Dashes and letter case are
+# ignored when a code is entered.
+# Allowed: 2 to 8. Read by: server.
+group_size = 4
+
+# Most codes that may be unused and unexpired at the same time. Stops an
+# admin (or a script) from filling the table with live codes.
+# Allowed: 1 to 10000. Read by: server.
+max_active = 50
+
+
+# -----------------------------------------------------------------------------
+#  [agents]  Registered PCs: heartbeat rules and what counts as "online".
+#  The agent reads heartbeat_interval_s too (as its starting interval).
+# -----------------------------------------------------------------------------
+[agents]
+
+# Seconds between heartbeats. The server returns this value in every heartbeat
+# reply and the agent obeys it, so changing it here changes the whole fleet
+# within one beat. The task requires 30.
+# Allowed: 1 to 3600. Read by: server, agent.
+heartbeat_interval_s = 30
+
+# A PC counts as ONLINE when its last heartbeat is at most this many seconds
+# old (so exactly 90 s old is still online, 91 s is offline). Must tolerate
+# a missed beat or two.
+# Allowed: at least 2 * heartbeat_interval_s. Read by: server.
+online_threshold_s = 90
+
+# Longest allowed agent name. Names are letters, digits, "." "_" "-", must start
+# with a letter or digit, and are unique ignoring case.
+# Allowed: 8 to 100. Read by: server.
+name_max_length = 40
+
+# Largest "info" JSON an agent may attach to a heartbeat (host name, OS, agent
+# version...). Larger payloads are rejected. It is display-only data.
+# Allowed: 128 to 65536. Read by: server.
+info_max_bytes = 2048
+
+
+# -----------------------------------------------------------------------------
+#  [actions]  Operator-triggered actions.
+# -----------------------------------------------------------------------------
+[actions]
+
+# The fixed list of actions operators may send. Every name must also exist in
+# the code registry on the server AND in the agent (config can switch a known
+# action off, it can never add a new one). The server sends only these NAMES;
+# the agent maps each name to its own built-in Python function. No shell, no
+# parameters.
+# Allowed: a non-empty subset of the four names shown. Read by: server, agent.
+enabled_kinds = [
+	"clear_print_queue",
+	"restart_print_spooler",
+	"flush_dns_cache",
+	"get_disk_usage",
+]
+
+# Most actions that may wait (status "queued") for one agent. The next request
+# is refused with 409, so an offline PC cannot collect an unbounded backlog.
+# Allowed: 1 to 100. Read by: server.
+max_queued_per_agent = 10
+
+# Most actions handed to an agent in one heartbeat reply (oldest first).
+# Allowed: 1 to 100. Read by: server.
+claim_batch_size = 10
+
+# A "dispatched" action with no result after this many seconds is marked
+# "expired"; a result that arrives later is rejected.
+# Allowed: at least agent.action_timeout_s + agents.heartbeat_interval_s.
+# Read by: server.
+dispatch_expiry_s = 120
+
+# A "queued" action that the agent has not collected after this many seconds is
+# marked "expired", so a command sent to a PC that was switched off does not
+# fire hours later when it comes back.
+# Allowed: 60 to 604800. Read by: server.
+queued_expiry_s = 3600
+
+# Longest result text stored for an action. Longer output is cut (on a
+# character boundary) and ends with a "[truncated]" marker.
+# Allowed: 256 to 65536. Read by: server, agent.
+output_max_bytes = 4096
+
+# Number of rows returned by an action-history list when the caller does not
+# ask for a size, and the most a caller may ask for.
+# Allowed: default 1 to 200, max 1 to 1000, default <= max. Read by: server.
+history_default_limit = 50
+history_max_limit = 200
+
+
+# -----------------------------------------------------------------------------
+#  [agent]  Settings used only by the agent process on a lab PC.
+#  The agent's name comes from the AGENT_NAME environment variable.
+# -----------------------------------------------------------------------------
+[agent]
+
+# Base URL of the server as seen from the agent. It goes through the reverse
+# proxy over HTTPS; "proxy" is the compose service name.
+# Allowed: https:// URL (plain http is refused). Read by: agent.
+server_url = "https://proxy:8443"
+
+# Certificate authority file the agent trusts for the server. The agent never
+# turns certificate checking off. In compose this is the throw-away CA made by
+# the "certgen" container.
+# Allowed: path to a PEM file. Read by: agent.
+ca_bundle = "/certs/ca.pem"
+
+# Directory (own Docker volume per agent, mode 700) where the agent keeps its
+# state file: agent id, token, and the hash of the registration code it has
+# already used. Wiping it makes the agent forget it was registered.
+# Allowed: absolute path. Read by: agent.
+state_dir = "/state"
+
+# Directory (mounted read-only) where the agent looks for its one-time code, as
+# "<AGENT_NAME>.code". Must match paths.bootstrap_dir on the server side.
+# Allowed: absolute path. Read by: agent.
+bootstrap_dir = "/bootstrap"
+
+# Seconds to wait for the TCP/TLS connection, and for the reply once connected.
+# Allowed: 1 to 120 each. Read by: agent.
+connect_timeout_s = 5
+read_timeout_s = 10
+
+# Retry delays when the server cannot be reached or answers 5xx: first wait,
+# doubling up to the maximum. backoff_jitter is the random +/- fraction added
+# so many agents do not retry in lock-step (0.2 means +/-20 %).
+# Allowed: backoff_initial_s 1 to 60, backoff_max_s >= initial and <= 3600,
+#          backoff_jitter 0.0 to 1.0. Read by: agent.
+backoff_initial_s = 2
+backoff_max_s = 60
+backoff_jitter = 0.2
+
+# Longest a single action may run on the agent before it is stopped and
+# reported as "failed" (timeout).
+# Allowed: 1 to 600. Read by: agent.
+action_timeout_s = 30
+
+# Root folder of the SIMULATED PC inside the agent container. Actions work only
+# on files below it: <sim_root>/spool/ (print queue), <sim_root>/dns_cache.txt,
+# <sim_root>/spooler.json (restart counter). A real deployment would replace
+# these with real system calls.
+# Allowed: absolute path writable by the agent user. Read by: agent.
+sim_root = "/var/lib/labpc/sim"
+
+# Number of fake print jobs the agent creates in the spool folder at start-up
+# if they are missing, so "clear_print_queue" has something to remove in the
+# demo. Set to 0 to disable.
+# Allowed: 0 to 1000. Read by: agent.
+demo_spool_jobs = 5
+
+# Path reported by the "get_disk_usage" action.
+# Allowed: absolute path that exists in the container. Read by: agent.
+disk_usage_path = "/"
+
+
+# -----------------------------------------------------------------------------
+#  [seed]  Sample data created at start-up so the system can be tried at once.
+#  NOTE: the [[seed.users]] entries must stay at the end of this section.
+# -----------------------------------------------------------------------------
+[seed]
+
+# Length of each generated sample password (random letters and digits). The
+# passwords are written to paths.credentials_file, never logged.
+# Allowed: 12 to 64. Read by: server.
+password_length = 20
+
+# Names of the demo agents. For each name the server writes a one-time
+# registration code to <paths.bootstrap_dir>/<name>.code on first start.
+# These names must match the AGENT_NAME of the agent services in
+# docker-compose.yml.
+# Allowed: list of valid agent names (see agents.name_max_length), unique.
+# Read by: server.
+bootstrap_agent_names = ["pc-01", "pc-02", "pc-03"]
+
+# Sample users created if they do not exist yet. One [[seed.users]] block per
+# user. At least one "admin" and one "operator" must be present (the task
+# requires users for every role). Existing users are never modified.
+# Allowed: username letters/digits/"._-" (unique); role "admin" or "operator".
+# Read by: server.
+[[seed.users]]
+username = "admin"
+role = "admin"
+
+# Second sample user: an IT operator (can see PCs and send actions, but cannot
+# create codes or remove agents). Same rules as the block above.
+[[seed.users]]
+username = "operator"
+role = "operator"

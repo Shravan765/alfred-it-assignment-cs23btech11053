@@ -1,0 +1,2 @@
+[auth]
+scrypt_n = 1024

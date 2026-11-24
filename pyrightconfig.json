@@ -1,0 +1,7 @@
+{
+  "include": ["shared", "server", "tests"],
+  "exclude": ["**/__pycache__", ".venv", "env"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12",
+  "reportMissingTypeStubs": false
+}

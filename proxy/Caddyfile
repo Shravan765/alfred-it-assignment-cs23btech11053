@@ -1,0 +1,8 @@
+{
+	auto_https off
+	admin off
+}
+:8443 {
+	tls /certs/leaf.pem /certs/leaf.key
+	reverse_proxy app:8000
+}

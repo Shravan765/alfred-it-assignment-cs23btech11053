@@ -1,0 +1,13 @@
+name: labpc
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - fastapi # API framework for the server
+  - uvicorn # ASGI server
+  - httpx # Agent HTTP client and FastAPI test client
+  - pytest # Test runner
+  - pytest-timeout # Prevent hung tests from blocking validation
+  - ruff # Static linting
+  - nodejs>=20 # Runtime for pyright
+  - pyright # Static type checking

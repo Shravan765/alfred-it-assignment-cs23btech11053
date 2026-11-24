@@ -1,0 +1,47 @@
+CREATE TABLE IF NOT EXISTS meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS users (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+	password_hash TEXT NOT NULL,
+	role TEXT NOT NULL CHECK (role IN ('admin', 'operator')),
+	created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+	token_hash TEXT PRIMARY KEY,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agents (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+	token_hash TEXT NOT NULL UNIQUE,
+	registered_at INTEGER NOT NULL,
+	last_seen_at INTEGER,
+	last_ip TEXT,
+	info_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS registration_codes (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	code_hash TEXT NOT NULL UNIQUE,
+	created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL,
+	used_at INTEGER,
+	used_by_agent INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+	revoked_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS actions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('queued', 'dispatched', 'succeeded', 'failed', 'expired')),
+	created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL,
+	dispatched_at INTEGER,
+	finished_at INTEGER,
+	output TEXT
+);

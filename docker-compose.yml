@@ -1,0 +1,47 @@
+services:
+  certgen:
+    build:
+      context: ./certgen
+    volumes:
+      - certs:/certs
+  app:
+    build:
+      context: .
+      target: server
+    environment:
+      LAB_CONFIG_FILE: /config/config_settings.toml
+    volumes:
+      - app_data:/data
+      - ./config_settings.toml:/config/config_settings.toml:ro
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+  proxy:
+    image: caddy:2.10.2-alpine
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - certs:/certs:ro
+    ports:
+      - "8443:8443"
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      app:
+        condition: service_healthy
+  tests:
+    build:
+      context: .
+      target: tests
+    profiles: [test]
+    command: ["pytest", "-q"]
+
+volumes:
+  app_data:
+  certs:
