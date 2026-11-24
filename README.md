@@ -1,12 +1,13 @@
 # Lab PC Agent
 
-A staged Python service for managing lab PCs. The implementation currently covers Stages 0–4 of `BUILD_PLAN.md`:
+A staged Python service for managing lab PCs. The implementation currently covers Stages 0–5 of `BUILD_PLAN.md`:
 
 - Validated TOML configuration and repository style guardrails.
 - FastAPI service behind a local HTTPS reverse proxy.
 - SQLite persistence using WAL, foreign keys and explicit transactions.
 - Seeded admin/operator accounts, scrypt password hashing and expiring bearer sessions.
 - Consistent online SQLite backups and validated, atomic database restores.
+- Admin-created one-time registration codes and agent registration (`POST /api/agent/register`) that issues a per-agent bearer token.
 
 ## Requirements
 
@@ -82,6 +83,80 @@ For a clean Docker-backed integration gate, run:
 
 **Warning:** the full gate starts with `docker compose down -v`, which deletes the Compose database and certificate volumes. Do not run it against data you need to preserve. It then builds the stack, checks HTTPS and persistence, exercises backup/restore, and runs lint, type checking and unit tests in the tests image. The `scripts/e2e_stage*.sh` scripts require a running Compose stack.
 
+## Registration codes and agent registration (Stage 5)
+
+Admins create one-time registration codes; an agent redeems one to register and receives a long-lived agent token.
+
+| Endpoint | Who | Purpose |
+|---|---|---|
+| `POST /api/admin/registration-codes` | admin | Create a code. The plaintext (e.g. `7H2K-9QXM-4TBD`) is returned **once**; only its SHA-256 hash is stored. `201`, or `409` if `codes.max_active` live codes already exist. |
+| `GET /api/admin/registration-codes` | admin | List codes with a derived `status` (`active`, `used`, `revoked`, `expired`). Never shows plaintext. |
+| `DELETE /api/admin/registration-codes/{id}` | admin | Revoke an unused code (`200`; `404` unknown id; `409` already used). |
+| `POST /api/agent/register` | anyone with a valid code | Body `{"code": "...", "name": "pc-01"}`; returns `201 {"agent_id", "token"}`. The token is shown once. |
+
+Rules worth knowing:
+
+- Codes are `codes.length` characters (default 12) from a 32-symbol alphabet without `I`, `L`, `O`, `U`, shown in groups of `codes.group_size` separated by dashes. Case and dashes are ignored when a code is entered.
+- A code lives `codes.ttl_s` seconds (default 24 h) and works exactly once, even when several requests race.
+- Unknown, malformed, used, expired and revoked codes all return the same `403 Invalid registration code`, so a caller cannot tell which case applies.
+- Agent names must match `[A-Za-z0-9][A-Za-z0-9._-]*` and be at most `agents.name_max_length` characters (`422` otherwise). A name that is already taken (ignoring case) gives `409` and does **not** use up the code.
+- Operators get `403` on the code endpoints; a user token on an agent endpoint, or an agent token on a user endpoint, gets `401`.
+- Not yet implemented: heartbeat (Stage 6), the agent process and its bootstrap codes (Stage 7), agent removal (Stage 8), throttling of failed registrations (Stage 10).
+
+## How to test the features
+
+### Automated
+
+```sh
+conda activate labpc
+python -m pytest -q                              # everything
+python -m pytest -q tests/unit/testRegistration.py   # Stage 5 only
+python -m pytest -q -k "Redeem or Expiry"        # race and expiry boundary tests
+./scripts/test.sh quick                          # ruff + pyright + pytest
+```
+
+`testRegistration.py` covers: alphabet/format/uniqueness of generated codes, case- and dash-insensitive input, single use, five threads racing for one code (exactly one `201`), expiry at `codes.ttl_s - 1` versus `codes.ttl_s` (fake clock, no sleeping), identical errors for unknown/used/expired/revoked codes, no plaintext code or token in the database files, `codes.max_active`, duplicate and invalid names, revoke rules, and token separation between users and agents. `testAuth.py` holds the route authorization matrix, which fails if any route is missing from it.
+
+With the stack running (`docker compose up --build -d`), the Stage 5 end-to-end check is:
+
+```sh
+./scripts/e2e_stage5.sh
+```
+
+It logs in as both sample users, checks the `403`/`401` responses, creates, redeems, reuses, lists and revokes codes, then removes its throw-away agent. The complete gate (`./scripts/test.sh`, which wipes Compose volumes) runs it automatically.
+
+### Manual walkthrough with curl
+
+Start the stack, then fetch the CA certificate and the sample passwords:
+
+```sh
+docker compose up --build -d
+CA=$(mktemp)
+docker compose exec -T proxy cat /certs/ca.pem > "$CA"
+ADMIN_PW=$(docker compose exec -T app sed -n 's/^admin://p' /data/sample_credentials.txt)
+OPERATOR_PW=$(docker compose exec -T app sed -n 's/^operator://p' /data/sample_credentials.txt)
+URL=https://localhost:8443
+login() { curl -s --cacert "$CA" -H 'Content-Type: application/json' -d "{\"username\":\"$1\",\"password\":\"$2\"}" $URL/api/auth/login | python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'; }
+ADMIN=$(login admin "$ADMIN_PW")
+OPERATOR=$(login operator "$OPERATOR_PW")
+```
+
+1. Create a code as admin. Expect `201` and a plaintext `code`:
+   `curl -s --cacert "$CA" -X POST -H "Authorization: Bearer $ADMIN" $URL/api/admin/registration-codes`
+2. As operator the same call returns `403`; without a token, `401`.
+3. Register an agent with that code (lower case and missing dashes also work). Expect `201` with `agent_id` and `token`:
+   `curl -s --cacert "$CA" -H 'Content-Type: application/json' -d '{"code":"<CODE>","name":"manual-pc"}' $URL/api/agent/register`
+4. Repeat step 3: `403 Invalid registration code`. Use a made-up code: the same `403`.
+5. List codes: the one you used shows `"status":"used"`, and no plaintext appears:
+   `curl -s --cacert "$CA" -H "Authorization: Bearer $ADMIN" $URL/api/admin/registration-codes`
+6. Create a second code, revoke it with `DELETE $URL/api/admin/registration-codes/<ID>` (`200`), then try to register with it: `403`.
+7. Revoke the already-used code from step 1: `409`.
+8. Try an invalid name (`"name":"bad name"`) with a fresh code: `422`, and the code still works afterwards with a valid name.
+9. Check that the agent token is not accepted as a user token (`401`):
+   `curl -s -o /dev/null -w '%{http_code}\n' --cacert "$CA" -H "Authorization: Bearer <AGENT_TOKEN>" $URL/api/auth/me`
+
+The `manual-pc` agent stays registered until Stage 8 adds removal. To discard it, run `docker compose down -v` (this wipes all Compose data). Clean up with `rm -f "$CA"`.
+
 ## Backup and restore
 
 Create a timestamped backup under `./backups/`:
@@ -118,4 +193,4 @@ Run restore only while the application is stopped; the provided `scripts/restore
 
 ## Current scope and known limitations
 
-Agent registration, heartbeat, agent runtime, action execution, rate limiting and the browser UI are later stages. The agent Docker target remains a placeholder until its planned stage. Conda dependency solving and Docker-based integration checks must be run in an environment with Conda/Mamba and Docker installed.
+Heartbeat and online status, the agent runtime, agent removal, action execution, rate limiting and the browser UI are later stages. The agent Docker target remains a placeholder until its planned stage. Conda dependency solving and Docker-based integration checks must be run in an environment with Conda/Mamba and Docker installed.

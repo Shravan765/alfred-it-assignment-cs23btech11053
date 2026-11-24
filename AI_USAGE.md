@@ -9,6 +9,7 @@ Append-only log of AI assistance for the Lab PC Agent assignment. The format is 
 | Claude Sonnet 5.5 (claude.ai chat, Anthropic) | Planning: staged build plan, design, test plan, `config_settings.toml` schema and comments, `environment.yml`, the `AI_USAGE.md` format, and this log | Planning (P1, P2) |
 | OpenAI ChatGPT GPT-6 | Implemented Stages 0–4: shared config loader, API/logging skeleton, SQLite persistence, user authentication/roles, online SQLite backup and validated restore, tests, Docker/Compose scaffolding and documentation | Stages 0–4 |
 | Google Gemini 3.8 Flash (Antigravity) | Static lint & type checks resolution (Ruff, Pyright, Node.js update), port parsing fix in E2E test, and SQLite WAL/read-only restore fix | Stages 0–4 verification & bug fixes |
+| Claude Sonnet 5.5 (claude.ai chat, Anthropic) | Implemented Stage 5: registration codes, agent registration, `currentAgent`, tests, Stage 5 E2E script, README instructions | Stage 5 |
 
 ## Dependencies
 
@@ -185,3 +186,43 @@ Non-conda container sources selected in the files but not built or verified here
   - Why staging before validation in `restoreDatabase`: Copying the bytes into a temporary file on the writable `/data` volume before validating ensures SQLite can safely validate the exact disk image, and unlinking in `finally` guarantees that a corrupted or incompatible file never overwrites the live database.
 - Sources copied or adapted: None.
 - Known gaps / risks: None for Stages 0–4. The clean-start test `./scripts/test.sh` now executes through Stages 0 to 4 cleanly. Stages 5+ (agent registration, heartbeat, and action execution) remain to be implemented per the build plan.
+
+
+### [Stage 5 / implementation] Registration codes and agent registration: 2026-11-24
+- Tool/model: Claude Sonnet 5.5 (claude.ai chat, with its sandbox for file edits and local checks).
+- Task given: Build Stage 5 of `BUILD_PLAN.md` (admin registration-code endpoints, `POST /api/agent/register`, `currentAgent`), write tests as in earlier stages, document how to run and test the features in the README, log the work here, and follow the repository coding convention and linters.
+- What the AI produced:
+  - `server/app/security.py`: `CODE_ALPHABET` (Crockford base32, no I/L/O/U), `newRegistrationCode()`, `normaliseCode()` (about 18 lines).
+  - `server/app/clock.py`: `toIso()` for ISO-8601 UTC output.
+  - `server/app/deps.py`: real `currentAgent` (replaces the Stage 3 placeholder): bearer token hashed and looked up in `agents`, 401 otherwise.
+  - `server/app/routers/codes.py` (about 85 lines): create, list and revoke codes, admin only through the existing `manage_codes` capability.
+  - `server/app/routers/agentApi.py` (about 55 lines): `POST /api/agent/register`.
+  - `server/app/main.py`: includes the two new routers.
+  - `tests/unit/testRegistration.py` (16 tests, about 260 lines); updated the route authorization matrix in `tests/unit/testAuth.py` (4 new routes, DELETE method, agent column now uses a really registered agent token); removed the Stage 5 keys from `UNIMPLEMENTED_KEYS` in `tests/unit/testConfig.py`.
+  - `scripts/e2e_stage5.sh` (runs inside the app container, cleans up its throw-away agent) and a call to it in `scripts/test.sh`.
+  - `README.md`: Stage 5 API table and rules, "How to test the features" (automated commands, E2E script, nine-step curl walkthrough), updated scope.
+- What I changed or rejected, and why:
+  - Kept the plan's error semantics and chose concrete codes where the plan said "4xx": unknown, malformed, used, expired and revoked codes all return `403 Invalid registration code`; invalid agent name `422`; duplicate name `409`.
+  - Rejected checking the name before redeeming the code: that would let an anonymous caller probe which agent names exist. The code is redeemed first inside one transaction, and a duplicate name rolls it back so the code stays unused.
+  - Implemented revoke (`DELETE .../{id}`) in this stage because the Stage 5 tests need revoked codes; Stage 8 will only add its own tests (agent removal and the end-to-end checks).
+  - Did not implement the register throttle (`throttle.register_*`); that is Stage 10, and those keys stay in `UNIMPLEMENTED_KEYS`.
+  - No heartbeat endpoint exists yet, so the "agent token on an agent endpoint" check uses a probe route added inside the test.
+- Config / dependency changes: no TOML keys added or changed. `codes.ttl_s`, `codes.length`, `codes.group_size`, `codes.max_active` and `agents.name_max_length` are now read by code and were removed from `UNIMPLEMENTED_KEYS`. No new packages (Dependencies table unchanged).
+- Verification run:
+  - Repository style checker (`checkSource` from `testStyle.py`) run directly on every new or changed Python file: no violations.
+  - `python -m compileall -q shared server tests`: passed. `sh -n scripts/e2e_stage5.sh scripts/test.sh`: passed. The Python embedded in `e2e_stage5.sh` was extracted and passed `py_compile`.
+  - **Not run:** `pytest`, `ruff check .`, `pyright`, Docker and the E2E script. This workspace has no network, so FastAPI, pytest, Ruff and Pyright could not be installed; Docker is unavailable. The new tests have therefore never been executed, and the "break the code on purpose" step of the plan's validation checklist was not done. I reviewed import order and the lint rules by hand only. Human run of `./scripts/test.sh quick` and the full gate: pending.
+- Explain-it notes:
+  - Redeem is `UPDATE registration_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?` with the rowcount checked, inside `BEGIN IMMEDIATE`. Two racing requests cannot both change a row, so exactly one wins; the loser sees rowcount 0 and gets the generic 403.
+  - `expires_at > now` means a code is valid for `ttl_s - 1` seconds after creation and dead at `ttl_s`; the boundary test pins exactly that.
+  - Codes and tokens are stored as SHA-256 (they are random 60-bit and 256-bit values, so a slow hash adds nothing). The test reads the database and WAL bytes, first asserting that the hashes are present so the plaintext-absent assertion cannot pass vacuously.
+  - `max_active` is counted with the same "unused, unrevoked, unexpired" condition as redeem, in the same transaction as the insert, so concurrent admins cannot overshoot it.
+  - `currentAgent` and `currentUser` look in different tables (`agents.token_hash` versus `sessions.token_hash`), so a token of one kind cannot authenticate as the other.
+  - The code is accepted in any case and with or without dashes because `normaliseCode` canonicalises before hashing; only the canonical form is hashed.
+- Sources copied or adapted: none. The Crockford base32 alphabet is from the plan (Stage 5 text).
+- Known gaps / risks:
+  - Tests, Ruff and Pyright not executed (see above); the first real run may reveal small mistakes, for example in the threaded redeem test or in the lint rules the project actually enables.
+  - If two code hashes collided (about 2^-60 per pair) the insert would fail with a 500; judged negligible and not handled.
+  - `GET /api/admin/registration-codes` has no pagination; expired and used rows accumulate until a later stage adds cleanup.
+  - Registration attempts are not throttled until Stage 10, so a determined caller can guess codes at network speed (60-bit codes, 24 h lifetime).
+  - The E2E script talks to the internal listener (`127.0.0.1:8000`), not through the HTTPS proxy; the proxy path is covered by `e2e_stage1.sh` and the README curl walkthrough.

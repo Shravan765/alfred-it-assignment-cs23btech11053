@@ -25,6 +25,16 @@ def currentUser(request: Request, credentials: Annotated[HTTPAuthorizationCreden
 	return row
 
 
-def currentAgent():
-	'''Placeholder dependency reserved for the agent API stage.'''
-	raise HTTPException(status_code=401, detail='Not authenticated')
+def currentAgent(request: Request, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None):
+	'''Resolve a registered agent from its bearer token or return HTTP 401.'''
+	if credentials is None:
+		raise HTTPException(status_code=401, detail='Not authenticated')
+	connection = request.app.state.connection_factory()
+	try:
+		row = connection.execute('SELECT id, name FROM agents WHERE token_hash=?', (hashToken(credentials.credentials),)).fetchone()
+	finally:
+		connection.close()
+	if row is None:
+		raise HTTPException(status_code=401, detail='Not authenticated')
+	request.state.actor = row['name']
+	return row

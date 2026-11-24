@@ -5,6 +5,9 @@ import hashlib
 import hmac
 import secrets
 
+# Crockford-style base32: digits and letters without I, L, O, U (32 symbols, 5 bits each).
+CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
 
 def hashPassword(password: str, settings) -> str:
 	'''Hash a password with a fresh salt and configured scrypt parameters.'''
@@ -37,3 +40,18 @@ def newToken(settings) -> str:
 def hashToken(token: str) -> str:
 	'''Return the SHA-256 digest used for token storage.'''
 	return hashlib.sha256(token.encode()).hexdigest()
+
+
+def newRegistrationCode(settings) -> str:
+	'''Generate a grouped one-time registration code from the fixed alphabet.'''
+	characters = ''.join(secrets.choice(CODE_ALPHABET) for _ in range(settings.codes.length))
+	group_size = settings.codes.group_size
+	return '-'.join(characters[index:index + group_size] for index in range(0, len(characters), group_size))
+
+
+def normaliseCode(text: str, settings) -> str | None:
+	'''Return the canonical code (upper case, no dashes or spaces) or None if malformed.'''
+	canonical = text.upper().replace('-', '').replace(' ', '')
+	if len(canonical) != settings.codes.length or any(char not in CODE_ALPHABET for char in canonical):
+		return None
+	return canonical

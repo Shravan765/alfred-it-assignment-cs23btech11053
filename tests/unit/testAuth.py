@@ -125,23 +125,32 @@ def testRouteAuthorizationMatrix(temp_settings):
 		('POST', '/api/auth/login'): {'anonymous': 422, 'operator': 422, 'admin': 422, 'agent': 422},
 		('GET', '/api/auth/me'): {'anonymous': 401, 'operator': 200, 'admin': 200, 'agent': 401},
 		('POST', '/api/auth/logout'): {'anonymous': 401, 'operator': 200, 'admin': 200, 'agent': 401},
+		('POST', '/api/admin/registration-codes'): {'anonymous': 401, 'operator': 403, 'admin': 201, 'agent': 401},
+		('GET', '/api/admin/registration-codes'): {'anonymous': 401, 'operator': 403, 'admin': 200, 'agent': 401},
+		('DELETE', '/api/admin/registration-codes/{code_id}'): {'anonymous': 401, 'operator': 403, 'admin': 404, 'agent': 401},
+		('POST', '/api/agent/register'): {'anonymous': 422, 'operator': 422, 'admin': 422, 'agent': 422},
 	}
 	with TestClient(app) as client:
 		credentials_path = Path(temp_settings.paths.data_dir) / temp_settings.paths.credentials_file
 		credentials = dict(line.split(':', 1) for line in credentials_path.read_text().splitlines())
-		tokens = {}
-		for username in ('operator', 'admin'):
-			response = client.post('/api/auth/login', json={'username': username, 'password': credentials[username]})
-			tokens[username] = response.json()['access_token']
-		principals = {
-			'anonymous': {},
-			'operator': {'headers': {'Authorization': f"Bearer {tokens['operator']}"}},
-			'admin': {'headers': {'Authorization': f"Bearer {tokens['admin']}"}},
-			'agent': {'headers': {'Authorization': 'Bearer not-a-user-session'}},
-		}
-		registered = {(m, getattr(ctx, 'path', '')) for r in app.routes for ctx in (getattr(r, 'effective_route_contexts', lambda target=r: [target])()) for m in getattr(ctx, 'methods', set()) if m in {'GET', 'POST'}}
+		# A genuinely registered agent, so the agent column tests a real agent token.
+		setup_admin_token = client.post('/api/auth/login', json={'username': 'admin', 'password': credentials['admin']}).json()['access_token']
+		code = client.post('/api/admin/registration-codes', headers={'Authorization': f'Bearer {setup_admin_token}'}).json()['code']
+		agent_token = client.post('/api/agent/register', json={'code': code, 'name': 'matrix-agent'}).json()['token']
+
+		def principalHeaders(role: str) -> dict[str, str]:
+			'''Return active authorization headers for the principal under test.'''
+			if role == 'anonymous':
+				return {}
+			if role == 'agent':
+				return {'Authorization': f'Bearer {agent_token}'}
+			response = client.post('/api/auth/login', json={'username': role, 'password': credentials[role]})
+			return {'Authorization': f"Bearer {response.json()['access_token']}"}
+
+		registered = {(m, getattr(ctx, 'path', '')) for r in app.routes for ctx in (getattr(r, 'effective_route_contexts', lambda target=r: [target])()) for m in getattr(ctx, 'methods', set()) if m in {'GET', 'POST', 'DELETE'}}
 		assert registered == set(route_matrix)
 		for (method, path), expected in route_matrix.items():
-			for principal, kwargs in principals.items():
-				response = client.request(method, path, **kwargs)
+			for principal in ('anonymous', 'operator', 'admin', 'agent'):
+				headers = principalHeaders(principal)
+				response = client.request(method, path.replace('{code_id}', '999999'), headers=headers)
 				assert response.status_code == expected[principal], (method, path, principal)

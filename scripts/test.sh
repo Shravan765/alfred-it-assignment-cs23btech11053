@@ -43,6 +43,7 @@ else
 	./scripts/e2e_stage1.sh
 	./scripts/e2e_stage2.sh
 	./scripts/e2e_stage4.sh
+	./scripts/e2e_stage5.sh
 	runImageTests
-	echo 'Stage 0–4 validation gate passed.'
+	echo 'Stage 0–5 validation gate passed.'
 fi

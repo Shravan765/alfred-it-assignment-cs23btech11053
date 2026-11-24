@@ -14,8 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 UNIMPLEMENTED_KEYS = {
 	'paths.bootstrap_dir', 'throttle.login_max_failures', 'throttle.login_window_s',
 	'throttle.register_max_failures', 'throttle.register_window_s', 'limits.max_body_bytes',
-	'codes.ttl_s', 'codes.length', 'codes.group_size', 'codes.max_active',
-	'agents.heartbeat_interval_s', 'agents.online_threshold_s', 'agents.name_max_length', 'agents.info_max_bytes',
+	'agents.heartbeat_interval_s', 'agents.online_threshold_s', 'agents.info_max_bytes',
 	'actions.enabled_kinds', 'actions.max_queued_per_agent', 'actions.claim_batch_size', 'actions.dispatch_expiry_s',
 	'actions.queued_expiry_s', 'actions.output_max_bytes', 'actions.history_default_limit', 'actions.history_max_limit',
 	'agent.server_url', 'agent.ca_bundle', 'agent.state_dir', 'agent.bootstrap_dir', 'agent.connect_timeout_s',
